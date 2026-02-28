@@ -1,11 +1,12 @@
-import React, { useState } from 'react';
-import { 
-  Alert, 
-  StyleSheet, 
-  TextInput, 
-  TouchableOpacity, 
-  View, 
-  ActivityIndicator 
+import React, { useEffect, useState } from 'react';
+import {
+  Alert,
+  StyleSheet,
+  Switch,
+  TextInput,
+  TouchableOpacity,
+  View,
+  ActivityIndicator
 } from 'react-native';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/ThemedView';
@@ -15,6 +16,7 @@ import { useRealm } from '@realm/react';
 import { getDocumentAsync } from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
 import RealmDataService from '@/services/realmDataService';
+import { BiometricService } from '@/services/biometricService';
 
 const Settings = () => {
     const navigation = useNavigation();
@@ -24,6 +26,31 @@ const Settings = () => {
     const [password, setPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
     const [exportFileName, setExportFileName] = useState('');
+
+    const [biometricSupported, setBiometricSupported] = useState(false);
+    const [biometricEnabled, setBiometricEnabled] = useState(false);
+
+    useEffect(() => {
+        const loadBiometricState = async () => {
+            const supported = await BiometricService.isSupported();
+            const enabled = await BiometricService.isEnabled();
+            setBiometricSupported(supported);
+            setBiometricEnabled(enabled);
+        };
+        loadBiometricState();
+    }, []);
+
+    const handleBiometricToggle = async (value: boolean) => {
+        if (value) {
+            const success = await BiometricService.authenticate();
+            if (!success) {
+                Alert.alert('Authentication Failed', 'Could not enable biometric lock.');
+                return;
+            }
+        }
+        await BiometricService.setEnabled(value);
+        setBiometricEnabled(value);
+    };
 
     const handleExport = async () => {
         if (!password) {
@@ -111,6 +138,26 @@ const Settings = () => {
             </View>
 
             <View style={styles.contentContainer}>
+                <View style={styles.section}>
+                    <ThemedText style={styles.title}>Security</ThemedText>
+
+                    <View style={styles.row}>
+                        <View style={styles.rowLabel}>
+                            <ThemedText>Biometric Lock</ThemedText>
+                            {!biometricSupported && (
+                                <ThemedText style={styles.rowHint}>
+                                    Not available on this device
+                                </ThemedText>
+                            )}
+                        </View>
+                        <Switch
+                            value={biometricEnabled}
+                            onValueChange={handleBiometricToggle}
+                            disabled={!biometricSupported}
+                        />
+                    </View>
+                </View>
+
                 <View style={styles.section}>
                     <ThemedText style={styles.title}>Data Management</ThemedText>
 
@@ -209,7 +256,22 @@ const styles = StyleSheet.create({
     buttonText: {
         color: 'white',
         fontWeight: 'bold',
-    }
+    },
+    row: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingVertical: 8,
+    },
+    rowLabel: {
+        flex: 1,
+        marginRight: 12,
+    },
+    rowHint: {
+        fontSize: 12,
+        opacity: 0.5,
+        marginTop: 2,
+    },
 });
 
 export default Settings;
