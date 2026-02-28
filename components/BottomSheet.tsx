@@ -1,11 +1,12 @@
 import useKeyboardAvoiding from '@/hooks/useKeyboardAvoiding';
+import { useThemeColor } from '@/hooks/useThemeColor';
 import { FontAwesome } from '@expo/vector-icons';
 import React, { useState, useEffect, useRef } from 'react';
-import { 
-  View, 
-  StyleSheet, 
-  Modal, 
-  Animated, 
+import {
+  View,
+  StyleSheet,
+  Modal,
+  Animated,
   TouchableOpacity,
   Platform,
   Dimensions,
@@ -22,6 +23,8 @@ interface BottomSheetProps {
 const BottomSheet = ({ visible, children, heightPrecentile, onRequestClose }: BottomSheetProps) => {
   const [animatedValue] = useState(new Animated.Value(0));
   const { animatedTranslateY } = useKeyboardAvoiding();
+  const backgroundColor = useThemeColor({ light: '#fff', dark: '#1c1c1e' }, 'background');
+  const iconColor = useThemeColor({ light: '#000', dark: '#ECEDEE' }, 'text');
   const sheetHeight = useRef(Dimensions.get('window').height * heightPrecentile);
   const isKeyboardVisible = useRef(false);
 
@@ -77,12 +80,13 @@ const BottomSheet = ({ visible, children, heightPrecentile, onRequestClose }: Bo
         style={styles.overlay}
       >
         <View style={styles.modalContainer}>
-          <Animated.View 
+          <Animated.View
             style={[
-              styles.modalForm, 
-              { 
+              styles.modalForm,
+              {
                 transform: [{ translateY: combinedTranslateY }],
                 height: sheetHeight.current,
+                backgroundColor,
               }
             ]}
             onLayout={(e) => {
@@ -91,10 +95,10 @@ const BottomSheet = ({ visible, children, heightPrecentile, onRequestClose }: Bo
             }}
           >
             <TouchableOpacity onPress={onRequestClose}>
-              <FontAwesome 
+              <FontAwesome
                 size={24}
                 name="close"
-                style={{ color: '#000', alignSelf: 'flex-end' }}
+                style={{ color: iconColor, alignSelf: 'flex-end' }}
               />
             </TouchableOpacity>
             {children}
@@ -115,7 +119,6 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   modalForm: {
-    backgroundColor: "#fff",
     width: '100%',
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,

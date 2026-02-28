@@ -1,6 +1,5 @@
 import { useThemeColor } from '@/hooks/useThemeColor';
 import { FontAwesome } from '@expo/vector-icons';
-import { useTheme } from '@react-navigation/native';
 import React, { useState } from 'react';
 import { StyleSheet, TextInput, TouchableOpacity, View } from 'react-native';
 import { ThemedText } from './ThemedText';
@@ -16,11 +15,8 @@ interface InputProps {
 }
 
 const Input: React.FC<InputProps> = ({ placeholder, iconName, label, passwordVisibility = false, onChangeText, value }) => {
-    const [isPasswordVisible, setIsPasswordVisible] = useState(false);
-
-    useState(() => {
-        setIsPasswordVisible(!passwordVisibility);
-    });
+    const [isPasswordVisible, setIsPasswordVisible] = useState(!passwordVisibility);
+    const textColor = useThemeColor({ light: '#11181C', dark: '#ECEDEE' }, 'text');
 
     return (
         <View style={{ width: '100%', marginVertical: 10 }}>
@@ -35,7 +31,7 @@ const Input: React.FC<InputProps> = ({ placeholder, iconName, label, passwordVis
                 </View>
                 <TextInput
                     placeholder={placeholder}
-                    style={styles.input}
+                    style={[styles.input, { color: textColor }]}
                     secureTextEntry={!isPasswordVisible}
                     onChangeText={onChangeText}
                     value={value}
@@ -69,7 +65,6 @@ const styles = StyleSheet.create({
         marginRight: 12,
     },
     input: {
-        color: '#000', // TODO: fix for theme
         width: '82%',
         fontSize: 16,
         textAlign: 'left',

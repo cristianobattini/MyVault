@@ -1,5 +1,6 @@
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/ThemedView';
+import { useThemeColor } from '@/hooks/useThemeColor';
 import React, { useEffect, useState } from 'react';
 import { Animated, FlatList, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useQuery, useRealm } from '@realm/react';
@@ -38,6 +39,7 @@ const Index = () => {
 
     const modalAnim = useState(new Animated.Value(0))[0];
     const scaleAnim = useState(new Animated.Value(1))[0];
+    const modalBackgroundColor = useThemeColor({ light: '#fff', dark: '#1c1c1e' }, 'background');
 
     // Filtra le credenziali per tag selezionato
     const filteredCredentials = (selectedTag
@@ -381,6 +383,7 @@ const Index = () => {
                         style={[
                             styles.modalView,
                             {
+                                backgroundColor: modalBackgroundColor,
                                 opacity: modalAnim,
                                 transform: [
                                     {
@@ -446,7 +449,6 @@ const styles = StyleSheet.create({
         margin: 20,
         height: '20%',
         width: '80%',
-        backgroundColor: 'white',
         borderRadius: 20,
         padding: 35,
         alignItems: 'center',

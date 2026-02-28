@@ -7,6 +7,7 @@ import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/ThemedView';
 import { Octicons } from '@expo/vector-icons';
 import { useEffect, useState } from 'react';
+import { useThemeColor } from '@/hooks/useThemeColor';
 import BottomSheet from '@/components/BottomSheet';
 import Input from '@/components/Input';
 import { useForm, Controller } from 'react-hook-form';
@@ -31,6 +32,7 @@ export default function CredentialDetail() {
     const [selectedTag, setSelectedTag] = useState<Tag>();
 
     const tags: List<Tag> = useQuery(Tag) as unknown as List<Tag>
+    const textColor = useThemeColor({ light: '#11181C', dark: '#ECEDEE' }, 'text');
 
     const navigation = useNavigation()
 
@@ -98,11 +100,11 @@ export default function CredentialDetail() {
     };
 
     const handleNavigateToUrl = () => {
-        if (credential.url != '') {
-            var urlToNavigateTo = credential.url
-            if (!credential.url.includes('http') || !credential.url.includes('https'))
-                urlToNavigateTo = 'https://' + credential.url
-            Linking.openURL(urlToNavigateTo)
+        if (credential.url !== '') {
+            let urlToNavigateTo = credential.url;
+            if (!credential.url.startsWith('http://') && !credential.url.startsWith('https://'))
+                urlToNavigateTo = 'https://' + credential.url;
+            Linking.openURL(urlToNavigateTo);
         }
     }
 
@@ -226,7 +228,7 @@ export default function CredentialDetail() {
                             editable
                             multiline
                             numberOfLines={4}
-                            style={{ fontSize: 18, height: 250 }}
+                            style={{ fontSize: 18, height: 250, color: textColor }}
                             onChangeText={text => setNotes(text)}
                             placeholder='Insert some notes...'
                             placeholderTextColor="#999"
@@ -373,7 +375,7 @@ export default function CredentialDetail() {
                 visible={clipboardSnackbarVisible}
                 onDismiss={() => { }}
             >
-                Colpied to clipboard.
+                Copied to clipboard.
             </Snackbar>
 
             <Snackbar
