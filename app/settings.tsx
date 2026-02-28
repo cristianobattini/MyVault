@@ -6,7 +6,7 @@ import {
   TextInput,
   TouchableOpacity,
   View,
-  ActivityIndicator
+  ActivityIndicator,
 } from 'react-native';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/ThemedView';
@@ -20,13 +20,9 @@ import { BiometricService } from '@/services/biometricService';
 
 const Settings = () => {
     const navigation = useNavigation();
-    const realm = useRealm(); // Get Realm instance from context
+    const realm = useRealm();
 
-    const [isProcessing, setIsProcessing] = useState(false);
-    const [password, setPassword] = useState('');
-    const [confirmPassword, setConfirmPassword] = useState('');
-    const [exportFileName, setExportFileName] = useState('');
-
+    // ── Biometric ──────────────────────────────────────────────────────────────
     const [biometricSupported, setBiometricSupported] = useState(false);
     const [biometricEnabled, setBiometricEnabled] = useState(false);
 
@@ -52,77 +48,81 @@ const Settings = () => {
         setBiometricEnabled(value);
     };
 
+    // ── Export ─────────────────────────────────────────────────────────────────
+    const [exportFileName, setExportFileName] = useState('');
+    const [exportPassword, setExportPassword] = useState('');
+    const [exportConfirm, setExportConfirm] = useState('');
+    const [isExporting, setIsExporting] = useState(false);
+
     const handleExport = async () => {
-        if (!password) {
-            Alert.alert('Error', 'Please enter an encryption password');
+        if (!exportPassword) {
+            Alert.alert('Error', 'Please enter an encryption password.');
+            return;
+        }
+        if (exportPassword !== exportConfirm) {
+            Alert.alert('Error', 'Passwords do not match.');
+            return;
+        }
+        if (exportPassword.length < 8) {
+            Alert.alert('Weak Password', 'Please use at least 8 characters for better protection.');
             return;
         }
 
-        if (password !== confirmPassword) {
-            Alert.alert('Error', 'Passwords do not match');
-            return;
-        }
-
-        setIsProcessing(true);
+        setIsExporting(true);
         try {
-            const fileName = exportFileName || `credentials_export_${new Date().toISOString().split('T')[0]}`;
-            const fileUri = await RealmDataService.exportData(realm, password);
+            const fileUri = await RealmDataService.exportData(realm, exportPassword, exportFileName || undefined);
 
             if (await Sharing.isAvailableAsync()) {
                 await Sharing.shareAsync(fileUri, {
                     dialogTitle: 'Share Encrypted Backup',
-                    mimeType: 'application/json',
-                    UTI: 'public.json',
+                    mimeType:   'application/octet-stream',
+                    UTI:        'public.data',
                 });
             } else {
-                Alert.alert(
-                    'Export Complete',
-                    'File saved to: ' + fileUri,
-                    [{ text: 'OK' }]
-                );
+                Alert.alert('Export Complete', `File saved to:\n${fileUri}`);
             }
         } catch (error) {
-            Alert.alert('Export Failed', 'An error occurred during export');
+            Alert.alert('Export Failed', 'An error occurred during export.');
             console.error(error);
         } finally {
-            setIsProcessing(false);
+            setIsExporting(false);
         }
     };
 
+    // ── Import ─────────────────────────────────────────────────────────────────
+    const [importPassword, setImportPassword] = useState('');
+    const [isImporting, setIsImporting] = useState(false);
+
     const handleImport = async () => {
-        if (!password) {
-            Alert.alert('Error', 'Please enter the encryption password');
+        if (!importPassword) {
+            Alert.alert('Error', 'Please enter the backup password.');
             return;
         }
 
         try {
             const result = await getDocumentAsync({
-                type: 'application/json',
+                type:               '*/*',
                 copyToCacheDirectory: true,
-                multiple: false
+                multiple:           false,
             });
 
-            if (result.canceled) {
-                console.log('User canceled document picker');
-                return;
-            }
+            if (result.canceled) return;
 
-            if (result.assets && result.assets.length > 0) {
-                setIsProcessing(true);
+            if (result.assets?.length > 0) {
+                setIsImporting(true);
                 try {
-                    const file = result.assets[0];
-                    await RealmDataService.importData(realm, file.uri, password);
-                    Alert.alert('Success', 'Credentials imported successfully');
-                } catch (error) {
-                    Alert.alert('Import Failed', 'Wrong password or corrupted file');
-                    console.error(error);
+                    await RealmDataService.importData(realm, result.assets[0].uri, importPassword);
+                    Alert.alert('Import Complete', 'Credentials imported successfully.');
+                    setImportPassword('');
+                } catch (error: any) {
+                    Alert.alert('Import Failed', error?.message ?? 'Wrong password or corrupted file.');
                 } finally {
-                    setIsProcessing(false);
+                    setIsImporting(false);
                 }
             }
         } catch (error) {
             console.error('Document picker error:', error);
-            Alert.alert('Error', 'Failed to pick document');
+            Alert.alert('Error', 'Failed to open file picker.');
         }
     };
 
@@ -138,8 +138,10 @@ const Settings = () => {
             </View>
 
             <View style={styles.contentContainer}>
+
+                {/* ── Security ──────────────────────────────────────────── */}
                 <View style={styles.section}>
-                    <ThemedText style={styles.title}>Security</ThemedText>
+                    <ThemedText style={styles.sectionTitle}>Security</ThemedText>
 
                     <View style={styles.row}>
                         <View style={styles.rowLabel}>
@@ -158,54 +160,84 @@ const Settings = () => {
                     </View>
                 </View>
 
+                {/* ── Export Backup ─────────────────────────────────────── */}
                 <View style={styles.section}>
-                    <ThemedText style={styles.title}>Data Management</ThemedText>
+                    <ThemedText style={styles.sectionTitle}>Export Backup</ThemedText>
+                    <ThemedText style={styles.sectionHint}>
+                        Creates an AES-256 encrypted .mvault file you can share or store safely.
+                    </ThemedText>
 
-                    <ThemedText style={styles.label}>Export File Name (optional):</ThemedText>
+                    <ThemedText style={styles.label}>File name (optional)</ThemedText>
                     <TextInput
                         style={styles.input}
-                        placeholder="Enter file name"
+                        placeholder="e.g. my-vault-backup"
                         value={exportFileName}
                         onChangeText={setExportFileName}
+                        autoCapitalize="none"
                     />
 
-                    <ThemedText style={styles.label}>Encryption Password:</ThemedText>
+                    <ThemedText style={styles.label}>Encryption password</ThemedText>
                     <TextInput
                         style={styles.input}
-                        placeholder="Enter password"
+                        placeholder="Min. 8 characters"
                         secureTextEntry
-                        value={password}
-                        onChangeText={setPassword}
+                        value={exportPassword}
+                        onChangeText={setExportPassword}
                     />
 
-                    <ThemedText style={styles.label}>Confirm Password:</ThemedText>
+                    <ThemedText style={styles.label}>Confirm password</ThemedText>
                     <TextInput
                         style={styles.input}
-                        placeholder="Confirm password"
+                        placeholder="Repeat password"
                         secureTextEntry
-                        value={confirmPassword}
-                        onChangeText={setConfirmPassword}
+                        value={exportConfirm}
+                        onChangeText={setExportConfirm}
                     />
 
-                    {isProcessing ? (
-                        <ActivityIndicator size="small" style={{ marginTop: 20 }} />
+                    {isExporting ? (
+                        <View style={styles.progressRow}>
+                            <ActivityIndicator size="small" />
+                            <ThemedText style={styles.progressText}>
+                                Deriving key — this may take a moment…
+                            </ThemedText>
+                        </View>
                     ) : (
-                        <>
-                            <TouchableOpacity 
-                                style={styles.button} 
-                                onPress={handleExport}
-                            >
-                                <ThemedText style={styles.buttonText}>Export Data</ThemedText>
-                            </TouchableOpacity>
-                            <TouchableOpacity 
-                                style={styles.button} 
-                                onPress={handleImport}
-                            >
-                                <ThemedText style={styles.buttonText}>Import Data</ThemedText>
-                            </TouchableOpacity>
-                        </>
+                        <TouchableOpacity style={styles.button} onPress={handleExport}>
+                            <ThemedText style={styles.buttonText}>Export</ThemedText>
+                        </TouchableOpacity>
                     )}
                 </View>
+
+                {/* ── Import Backup ─────────────────────────────────────── */}
+                <View style={styles.section}>
+                    <ThemedText style={styles.sectionTitle}>Import Backup</ThemedText>
+                    <ThemedText style={styles.sectionHint}>
+                        Restores credentials from a .mvault file. Existing data is kept.
+                    </ThemedText>
+
+                    <ThemedText style={styles.label}>Backup password</ThemedText>
+                    <TextInput
+                        style={styles.input}
+                        placeholder="Password used when exporting"
+                        secureTextEntry
+                        value={importPassword}
+                        onChangeText={setImportPassword}
+                    />
+
+                    {isImporting ? (
+                        <View style={styles.progressRow}>
+                            <ActivityIndicator size="small" />
+                            <ThemedText style={styles.progressText}>
+                                Verifying and decrypting…
+                            </ThemedText>
+                        </View>
+                    ) : (
+                        <TouchableOpacity style={styles.button} onPress={handleImport}>
+                            <ThemedText style={styles.buttonText}>Choose File & Import</ThemedText>
+                        </TouchableOpacity>
+                    )}
+                </View>
+
             </View>
         </ThemedView>
     );
@@ -219,22 +251,30 @@ const styles = StyleSheet.create({
         padding: 16,
         flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'space-between'
+        justifyContent: 'space-between',
     },
     contentContainer: {
         flex: 1,
         padding: 20,
     },
     section: {
-        marginBottom: 30,
+        marginBottom: 24,
         borderRadius: 10,
         padding: 15,
         borderWidth: 1,
     },
-    title: {
+    sectionTitle: {
         fontSize: 18,
         fontWeight: 'bold',
-        marginBottom: 15,
+        marginBottom: 6,
+    },
+    sectionHint: {
+        fontSize: 12,
+        opacity: 0.55,
+        marginBottom: 14,
+    },
+    label: {
+        marginBottom: 5,
     },
     input: {
         height: 40,
@@ -243,11 +283,8 @@ const styles = StyleSheet.create({
         padding: 10,
         marginBottom: 15,
     },
-    label: {
-        marginBottom: 5,
-    },
     button: {
-        marginTop: 10,
+        marginTop: 4,
         padding: 15,
         borderRadius: 5,
         alignItems: 'center',
@@ -271,6 +308,17 @@ const styles = StyleSheet.create({
         fontSize: 12,
         opacity: 0.5,
         marginTop: 2,
+    },
+    progressRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 10,
+        marginTop: 10,
+        paddingVertical: 14,
+    },
+    progressText: {
+        fontSize: 13,
+        opacity: 0.7,
     },
 });
 

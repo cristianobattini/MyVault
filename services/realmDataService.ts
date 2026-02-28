@@ -1,268 +1,249 @@
+/**
+ * RealmDataService — secure export / import for MyVault
+ *
+ * Format v2 security properties:
+ *  - Key derivation : PBKDF2-SHA256, 50 000 iterations, 256-bit salt
+ *  - Encryption     : AES-256-CBC
+ *  - Authentication : HMAC-SHA256 (Encrypt-then-MAC over v|salt|iv|ct)
+ *  - Two independent 256-bit keys derived in one PBKDF2 call (enc + mac)
+ *  - All random material generated via expo-crypto (native CSPRNG)
+ */
+
 import Realm, { BSON } from 'realm';
 import CryptoJS from 'crypto-js';
 import * as FileSystem from 'expo-file-system';
-import * as Sharing from 'expo-sharing';
 import { Credential } from '@/models/Credential';
 import { Tag } from '@/models/Tag';
-import * as SecureStore from 'expo-secure-store';
-import * as Application from 'expo-application';
-import { getRandomBytes } from 'expo-crypto';
+import { getRandomBytesAsync } from 'expo-crypto';
 
+// ─── Security constants ───────────────────────────────────────────────────────
+
+const FORMAT_VERSION = 2;
+const PBKDF2_ITERATIONS = 50_000; // 50× the old value; SHA-256 hasher
+const SALT_BYTES = 32;            // 256-bit salt
+const IV_BYTES = 16;              // 128-bit IV for AES-CBC
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface EncryptedPackage {
+  v: number;          // format version (must equal FORMAT_VERSION)
+  salt: string;       // hex, 64 chars — 256-bit PBKDF2 salt
+  iv: string;         // hex, 32 chars — 128-bit AES IV
+  ct: string;         // base64 — AES-256-CBC ciphertext
+  mac: string;        // hex — HMAC-SHA256(macKey, "v|salt|iv|ct")
+  exportedAt: string; // ISO-8601 timestamp
+}
+
+// ─── Crypto helpers ───────────────────────────────────────────────────────────
+
+/** Generate `bytes` cryptographically secure random bytes as a lowercase hex string. */
+async function randomHex(bytes: number): Promise<string> {
+  const arr = await getRandomBytesAsync(bytes);
+  return Array.from(arr)
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/**
+ * Derive two independent 256-bit keys from `password` + `saltHex` using
+ * PBKDF2-SHA256 with PBKDF2_ITERATIONS iterations.
+ *
+ * A single 512-bit PBKDF2 output is split into:
+ *   encKey — first 256 bits, used for AES-256-CBC
+ *   macKey — last 256 bits, used for HMAC-SHA256
+ */
+async function deriveKeys(
+  password: string,
+  saltHex: string,
+): Promise<{ encKey: CryptoJS.lib.WordArray; macKey: CryptoJS.lib.WordArray }> {
+  const salt = CryptoJS.enc.Hex.parse(saltHex);
+
+  // 512 bits = keySize of 16 (words of 32 bits each)
+  const derived = CryptoJS.PBKDF2(password, salt, {
+    keySize: 512 / 32,
+    iterations: PBKDF2_ITERATIONS,
+    hasher: CryptoJS.algo.SHA256,
+  });
+
+  const hex = derived.toString(CryptoJS.enc.Hex); // 128 hex chars = 512 bits
+  return {
+    encKey: CryptoJS.enc.Hex.parse(hex.slice(0, 64)),  // first 256 bits
+    macKey: CryptoJS.enc.Hex.parse(hex.slice(64, 128)), // last 256 bits
+  };
+}
+
+/** Compute the MAC input string — deterministic canonical form. */
+function macInput(v: number, salt: string, iv: string, ct: string): string {
+  return `${v}|${salt}|${iv}|${ct}`;
+}
+
+// ─── Realm serialisation ──────────────────────────────────────────────────────
+
+function realmObjectToPlain(obj: any): any {
+  const plain: any = {};
+  Object.keys(obj.schema.properties).forEach(prop => {
+    if (prop === '_id') {
+      plain[prop] = obj[prop].toHexString();
+    } else if (obj[prop] instanceof Date) {
+      plain[prop] = obj[prop].toISOString();
+    } else if (Array.isArray(obj[prop])) {
+      plain[prop] = obj[prop].map((item: any) => item._id.toHexString());
+    } else {
+      plain[prop] = obj[prop];
+    }
+  });
+  return plain;
+}
+
+// ─── Service ──────────────────────────────────────────────────────────────────
 
 class RealmDataService {
-    private static SALT: string | null = null;
-    private static readonly ITERATIONS = 1000; // PBKDF2 iterations
+  /**
+   * Export all credentials + tags to an AES-256-CBC + HMAC-SHA256 encrypted
+   * file and return its local URI (ready to pass to expo-sharing).
+   */
+  static async exportData(realm: Realm, password: string, fileName?: string): Promise<string> {
+    // 1. Serialise Realm data
+    const payload = JSON.stringify({
+      credentials: Array.from(realm.objects<Credential>('Credential')).map(realmObjectToPlain),
+      tags: Array.from(realm.objects<Tag>('Tag')).map(realmObjectToPlain),
+    });
 
-    // Initialize the salt (call this once when app starts)
-    static async initializeSalt() {
-        // Try to get existing salt
-        let salt = await SecureStore.getItemAsync('appEncryptionSalt');
+    // 2. Generate fresh random salt and IV (native CSPRNG via expo-crypto)
+    const saltHex = await randomHex(SALT_BYTES);
+    const ivHex   = await randomHex(IV_BYTES);
 
-        if (!salt) {
-            // Create new salt combining:
-            // 1. Random bytes
-            // 2. Device-specific ID
-            // 3. Hardcoded component
-            const randomPart = getRandomBytes(16).toString();
-            const devicePart = Application.getAndroidId || (await Application.getIosIdForVendorAsync()) || '';
-            const staticPart = process.env.APP_ENCRYPTION_SALT_BASE;
+    // 3. Derive encryption + authentication keys
+    const { encKey, macKey } = await deriveKeys(password, saltHex);
 
+    // 4. Encrypt with AES-256-CBC
+    const iv        = CryptoJS.enc.Hex.parse(ivHex);
+    const encrypted = CryptoJS.AES.encrypt(payload, encKey, {
+      iv,
+      mode:    CryptoJS.mode.CBC,
+      padding: CryptoJS.pad.Pkcs7,
+    });
+    const ct = encrypted.toString(); // base64
 
-            salt = `${staticPart}${devicePart}${randomPart}`.substring(0, 32);
-            await SecureStore.setItemAsync('appEncryptionSalt', salt);
+    // 5. Authenticate — HMAC-SHA256 over the canonical "v|salt|iv|ct" string
+    const mac = CryptoJS.HmacSHA256(
+      macInput(FORMAT_VERSION, saltHex, ivHex, ct),
+      macKey,
+    ).toString(CryptoJS.enc.Hex);
+
+    // 6. Assemble encrypted package
+    const pkg: EncryptedPackage = {
+      v:          FORMAT_VERSION,
+      salt:       saltHex,
+      iv:         ivHex,
+      ct,
+      mac,
+      exportedAt: new Date().toISOString(),
+    };
+
+    // 7. Write to document directory and return URI
+    const date     = new Date().toISOString().split('T')[0];
+    const name     = fileName?.trim() || `myvault_${date}`;
+    const fileUri  = `${FileSystem.documentDirectory}${name}.mvault`;
+
+    await FileSystem.writeAsStringAsync(fileUri, JSON.stringify(pkg), {
+      encoding: FileSystem.EncodingType.UTF8,
+    });
+
+    return fileUri;
+  }
+
+  /**
+   * Decrypt and import a .mvault backup file.
+   * Throws a human-readable error on wrong password, tampering, or bad format.
+   */
+  static async importData(realm: Realm, fileUri: string, password: string): Promise<void> {
+    // 1. Read and parse
+    const raw = await FileSystem.readAsStringAsync(fileUri);
+    let pkg: EncryptedPackage;
+    try {
+      pkg = JSON.parse(raw);
+    } catch {
+      throw new Error('The file is not a valid MyVault backup.');
+    }
+
+    if (pkg.v !== FORMAT_VERSION) {
+      throw new Error(
+        `Unsupported backup format (v${pkg.v}). Please use the latest version of MyVault.`,
+      );
+    }
+
+    // 2. Derive keys from the password and the file's own salt
+    const { encKey, macKey } = await deriveKeys(password, pkg.salt);
+
+    // 3. Verify HMAC before decrypting (authentication first)
+    const expectedMac = CryptoJS.HmacSHA256(
+      macInput(FORMAT_VERSION, pkg.salt, pkg.iv, pkg.ct),
+      macKey,
+    ).toString(CryptoJS.enc.Hex);
+
+    if (expectedMac !== pkg.mac) {
+      // Same error for wrong password and tampered file — do not distinguish
+      throw new Error('Wrong password or corrupted backup file.');
+    }
+
+    // 4. Decrypt
+    const iv        = CryptoJS.enc.Hex.parse(pkg.iv);
+    const decrypted = CryptoJS.AES.decrypt(pkg.ct, encKey, {
+      iv,
+      mode:    CryptoJS.mode.CBC,
+      padding: CryptoJS.pad.Pkcs7,
+    });
+    const payload = decrypted.toString(CryptoJS.enc.Utf8);
+
+    if (!payload) {
+      throw new Error('Decryption produced no output — the file may be corrupted.');
+    }
+
+    let data: { credentials: any[]; tags: any[] };
+    try {
+      data = JSON.parse(payload);
+    } catch {
+      throw new Error('Decrypted data is malformed.');
+    }
+
+    // 5. Write to Realm
+    realm.write(() => {
+      // Import tags first (credentials reference them)
+      const tagMap = new Map<string, Tag>();
+
+      data.tags.forEach((tagData: any) => {
+        const tag = realm.create<Tag>('Tag', {
+          _id:      new BSON.ObjectId(tagData._id),
+          name:     tagData.name,
+          colorHex: tagData.colorHex,
+          iconName: tagData.iconName,
+        });
+        tagMap.set(tagData._id, tag);
+      });
+
+      data.credentials.forEach((credData: any) => {
+        const credential = realm.create<Credential>('Credential', {
+          _id:        new BSON.ObjectId(credData._id),
+          title:      credData.title,
+          username:   credData.username,
+          password:   credData.password,
+          url:        credData.url,
+          notes:      credData.notes,
+          createdAt:  new Date(credData.createdAt),
+          updatedAt:  new Date(credData.updatedAt),
+          isFavorite: credData.isFavorite,
+          isArchived: credData.isArchived,
+        });
+
+        if (credData.tags?.length > 0) {
+          credData.tags.forEach((tagId: string) => {
+            tagMap.get(tagId)?.credentials.push(credential);
+          });
         }
-
-        this.SALT = salt;
-    }
-
-    private static async getSalt(): Promise<string> {
-        if (!this.SALT) {
-            await this.initializeSalt();
-        }
-        return this.SALT!;
-    }
-
-    /**
-     * Export Realm data to an encrypted JSON file
-     * @param realm Realm instance
-     * @param password User-provided password for encryption
-     * @returns Promise with file URI
-     */
-    static async exportData(realm: Realm, password: string): Promise<string> {
-        try {
-            // 1. Extract all data from Realm
-            const credentials = realm.objects<Credential>('Credential');
-            const tags = realm.objects<Tag>('Tag');
-
-            // Convert Realm objects to plain objects
-            const data = {
-                credentials: credentials.map(c => this.realmObjectToPlain(c)),
-                tags: tags.map(t => this.realmObjectToPlain(t)),
-                exportedAt: new Date().toISOString(),
-            };
-
-            // 2. Encrypt the password with additional protection
-            const encryptedPassword = this.encryptPassword(password);
-
-            // 3. Encrypt the data with the user's password
-            const encryptedData = this.encryptData(JSON.stringify(data), password);
-
-            // 4. Combine encrypted password and data
-            const exportPackage = {
-                encryptedPassword,
-                encryptedData,
-                version: '1.0',
-            };
-
-            // 5. Save to file
-            const fileName = `credentials_export_${new Date().toISOString().split('T')[0]}.secure`;
-            const fileUri = `${FileSystem.documentDirectory}${fileName}`;
-
-            await FileSystem.writeAsStringAsync(fileUri, JSON.stringify(exportPackage), {
-                encoding: FileSystem.EncodingType.UTF8,
-            });
-
-            return fileUri;
-        } catch (error) {
-            console.error('Export failed:', error);
-            throw new Error('Failed to export data');
-        }
-    }
-
-    /**
-     * Import data from encrypted file
-     * @param realm Realm instance
-     * @param fileUri URI of the file to import
-     * @param password User-provided password for decryption
-     */
-    static async importData(realm: Realm, fileUri: string, password: string): Promise<void> {
-        try {
-            // 1. Read the file
-            const fileContent = await FileSystem.readAsStringAsync(fileUri);
-            const exportPackage = JSON.parse(fileContent);
-
-            // 2. Verify the password
-            const decryptedStoredPassword = this.decryptData(exportPackage.encryptedPassword, password);
-            if (decryptedStoredPassword !== password) {
-                throw new Error('Invalid password');
-            }
-
-            // 3. Decrypt the data
-            const decryptedData = this.decryptData(exportPackage.encryptedData, password);
-            const data = JSON.parse(decryptedData);
-
-            // 4. Import into Realm
-            realm.write(() => {
-                // Clear existing data if needed (optional)
-                // realm.deleteAll();
-
-                // Import tags first (since credentials reference them)
-                const tagMap = new Map<string, Tag>();
-                data.tags.forEach((tagData: any) => {
-                    const tag = realm.create<Tag>('Tag', {
-                        _id: new BSON.ObjectId(tagData._id),
-                        name: tagData.name,
-                        colorHex: tagData.colorHex,
-                        iconName: tagData.iconName,
-                    });
-                    tagMap.set(tagData._id, tag);
-                });
-
-                // Import credentials
-                data.credentials.forEach((credData: any) => {
-                    const credential = realm.create<Credential>('Credential', {
-                        _id: new BSON.ObjectId(credData._id),
-                        title: credData.title,
-                        username: credData.username,
-                        password: credData.password,
-                        url: credData.url,
-                        notes: credData.notes,
-                        createdAt: new Date(credData.createdAt),
-                        updatedAt: new Date(credData.updatedAt),
-                        isFavorite: credData.isFavorite,
-                        isArchived: credData.isArchived,
-                    });
-
-                    // Re-establish tag relationships
-                    if (credData.tags && credData.tags.length > 0) {
-                        credData.tags.forEach((tagId: string) => {
-                            const tag = tagMap.get(tagId);
-                            if (tag) {
-                                tag.credentials.push(credential);
-                            }
-                        });
-                    }
-                });
-            });
-        } catch (error) {
-            console.error('Import failed:', error);
-            throw new Error('Failed to import data. Check your password and file.');
-        }
-    }
-
-    /**
-     * Share the exported file
-     * @param fileUri URI of the file to share
-     */
-    static async shareExportedFile(fileUri: string): Promise<void> {
-        if (!(await Sharing.isAvailableAsync())) {
-            throw new Error('Sharing not available on this device');
-        }
-
-        await Sharing.shareAsync(fileUri, {
-            mimeType: 'application/json',
-            dialogTitle: 'Share Encrypted Credentials',
-            UTI: 'public.json',
-        });
-    }
-
-    /**
-     * Convert Realm object to plain JavaScript object
-     * @param obj Realm object
-     * @returns Plain object
-     */
-    private static realmObjectToPlain(obj: any): any {
-        const plainObj: any = {};
-        Object.keys(obj.schema.properties).forEach(prop => {
-            // Handle ObjectId and Date specially
-            if (prop === '_id') {
-                plainObj[prop] = obj[prop].toHexString();
-            } else if (obj[prop] instanceof Date) {
-                plainObj[prop] = obj[prop].toISOString();
-            } else if (Array.isArray(obj[prop])) {
-                // Handle relationships (simplified - just store IDs)
-                plainObj[prop] = obj[prop].map((item: any) => item._id.toHexString());
-            } else {
-                plainObj[prop] = obj[prop];
-            }
-        });
-        return plainObj;
-    }
-
-    /**
-     * Encrypt data with password
-     * @param data Data to encrypt
-     * @param password Encryption password
-     * @returns Encrypted data as string
-     */
-    private static encryptData(data: string, password: string): string {
-        const salt = CryptoJS.lib.WordArray.random(128 / 8);
-        const key = CryptoJS.PBKDF2(password, salt, {
-            keySize: 256 / 32,
-            iterations: this.ITERATIONS,
-        });
-        const iv = CryptoJS.lib.WordArray.random(128 / 8);
-
-        const encrypted = CryptoJS.AES.encrypt(data, key, {
-            iv: iv,
-            padding: CryptoJS.pad.Pkcs7,
-            mode: CryptoJS.mode.CBC,
-        });
-
-        // Combine salt, iv, and encrypted data
-        return salt.toString() + iv.toString() + encrypted.toString();
-    }
-
-    /**
-     * Decrypt data with password
-     * @param encryptedData Encrypted data
-     * @param password Decryption password
-     * @returns Decrypted data
-     */
-    private static decryptData(encryptedData: string, password: string): string {
-        // Extract salt (first 32 chars)
-        const salt = CryptoJS.enc.Hex.parse(encryptedData.substring(0, 32));
-        // Extract iv (next 32 chars)
-        const iv = CryptoJS.enc.Hex.parse(encryptedData.substring(32, 64));
-        // The rest is the actual encrypted data
-        const encrypted = encryptedData.substring(64);
-
-        const key = CryptoJS.PBKDF2(password, salt, {
-            keySize: 256 / 32,
-            iterations: this.ITERATIONS,
-        });
-
-        const decrypted = CryptoJS.AES.decrypt(encrypted, key, {
-            iv: iv,
-            padding: CryptoJS.pad.Pkcs7,
-            mode: CryptoJS.mode.CBC,
-        });
-
-        return decrypted.toString(CryptoJS.enc.Utf8);
-    }
-
-    /**
-     * Encrypt the password for additional protection
-     * @param password Password to encrypt
-     * @returns Encrypted password
-     */
-    private static async encryptPassword(password: string): Promise<string> {
-        const salt = await this.getSalt();
-        return CryptoJS.AES.encrypt(
-            password,
-            CryptoJS.PBKDF2(password, salt, { keySize: 256 / 32, iterations: this.ITERATIONS })
-        ).toString();
-    }
+      });
+    });
+  }
 }
 
 export default RealmDataService;
