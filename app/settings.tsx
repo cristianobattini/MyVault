@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   Alert,
+  ScrollView,
   StyleSheet,
   Switch,
   TextInput,
@@ -137,7 +138,7 @@ const Settings = () => {
                 </View>
             </View>
 
-            <View style={styles.contentContainer}>
+            <ScrollView style={styles.contentContainer} contentContainerStyle={{ paddingBottom: 40 }}>
 
                 {/* ── Security ──────────────────────────────────────────── */}
                 <View style={styles.section}>
@@ -238,7 +239,7 @@ const Settings = () => {
                     )}
                 </View>
 
-            </View>
+            </ScrollView>
         </ThemedView>
     );
 };

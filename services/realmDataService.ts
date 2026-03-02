@@ -80,8 +80,9 @@ function macInput(v: number, salt: string, iv: string, ct: string): string {
 // ─── Realm serialisation ──────────────────────────────────────────────────────
 
 function realmObjectToPlain(obj: any): any {
+  console.log('Serialising Realm object:', obj);
   const plain: any = {};
-  Object.keys(obj.schema.properties).forEach(prop => {
+  Object.keys(obj.objectSchema().properties).forEach(prop => {
     if (prop === '_id') {
       plain[prop] = obj[prop].toHexString();
     } else if (obj[prop] instanceof Date) {

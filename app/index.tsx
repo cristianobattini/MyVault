@@ -270,7 +270,7 @@ const Index = () => {
             <ThemedView style={styles.container}>
                 <View style={styles.header}>
                     <View style={{ flexDirection: 'row', gap: 20, alignItems: 'center' }}>
-                        <Link href="/">
+                        <Link href="/settings" asChild>
                             <Octicons name='gear' size={28} />
                         </Link>
                         <ThemedText type="title">MyVault</ThemedText>
